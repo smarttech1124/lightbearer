@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My Ticket — Light Bearers Picnic</title>
+  <meta name="theme-color" content="#0b1437">
+  <link rel="icon" href="/assets/logo.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="container">
+      <a class="brand" href="/">
+        <img src="/assets/logo.png" alt="Light Bearers">
+        <span class="brand-txt"><b>Light Bearers</b><small>Picnic Hangout</small></span>
+      </a>
+      <nav class="nav-links"><a class="btn btn-ghost btn-sm" href="/">Home</a></nav>
+    </div>
+  </header>
+
+  <main class="ticket-page">
+    <div class="container ticket">
+
+      <div id="loading" style="text-align:center;padding:4rem 0;color:var(--muted)">
+        <span class="spinner spinner-navy" style="width:28px;height:28px;margin:0 auto 1rem"></span>
+        <p>Loading your ticket…</p>
+      </div>
+
+      <div id="notfound" class="util-hidden card card-pad" style="text-align:center">
+        <h2>Ticket not found</h2>
+        <p class="text-muted">This ticket link doesn't match any registration.</p>
+        <a class="btn btn-navy" href="/find" style="margin-top:1rem">Find my ticket</a>
+      </div>
+
+      <div id="content" class="util-hidden">
+        <!-- success banner for brand-new registrations -->
+        <div id="new-banner" class="util-hidden" style="text-align:center;margin-bottom:1.5rem">
+          <div class="success-badge">
+            <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>
+          </div>
+          <h1 style="font-size:2rem">You're registered! 🎉</h1>
+          <p class="text-muted">Save your reference and complete payment to confirm your spot.</p>
+        </div>
+
+        <div class="ticket-card">
+          <div class="ticket-top">
+            <div class="eyebrow">Registration Reference</div>
+            <div class="ticket-ref" id="t-ref">—</div>
+            <div style="margin-top:.8rem"><span class="status" id="t-status">—</span></div>
+          </div>
+          <div class="perforation"></div>
+          <div class="ticket-body">
+            <div class="detail-list">
+              <div class="detail-row"><span class="k">Name</span><span class="v" id="t-name">—</span></div>
+              <div class="detail-row"><span class="k">Group</span><span class="v text-gold" id="t-group">—</span></div>
+              <div class="detail-row"><span class="k">Fee category</span><span class="v" id="t-tier">—</span></div>
+              <div class="detail-row"><span class="k">Amount to pay</span><span class="v" id="t-fee">—</span></div>
+            </div>
+
+            <div class="qr-box">
+              <img id="t-qr" alt="Your check-in QR code" src="">
+              <p>Your personal check-in code</p>
+              <div style="display:flex;gap:.5rem;justify-content:center;margin-top:.8rem">
+                <button class="btn btn-light btn-sm" id="qr-download">⬇ Download</button>
+                <button class="btn btn-light btn-sm" id="print-btn">🖨 Print ticket</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Payment section -->
+        <div id="pay-section" class="card card-pad" style="margin-top:1.5rem">
+          <h3 style="font-size:1.25rem;margin-bottom:.3rem">Complete your payment</h3>
+          <p class="text-muted" style="font-size:.9rem;margin-bottom:1.2rem">Transfer the exact amount and use your reference as the narration.</p>
+
+          <div class="bank-box">
+            <h4>Bank transfer details</h4>
+            <div class="bank-row"><span class="bk">Bank</span><span class="bv" id="b-bank">—</span></div>
+            <div class="bank-row"><span class="bk">Account name</span><span class="bv" id="b-name">—</span></div>
+            <div class="bank-row"><span class="bk">Account number</span><span class="bv"><span id="b-acct">—</span><button class="copy-btn" id="copy-acct">copy</button></span></div>
+            <div class="bank-row"><span class="bk">Amount</span><span class="bv" id="b-amount">—</span></div>
+            <div class="bank-row"><span class="bk">Narration / Remark</span><span class="bv"><span id="b-ref">—</span><button class="copy-btn" id="copy-ref">copy</button></span></div>
+          </div>
+
+          <div style="margin-top:1.5rem">
+            <label class="lbl">Upload your payment receipt</label>
+            <div class="upload-zone" id="drop-zone" tabindex="0" role="button" aria-label="Upload receipt">
+              <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>
+              <div class="uz-main">Tap to upload or drag &amp; drop</div>
+              <div class="uz-sub">JPG, PNG, WEBP or PDF · up to 8MB</div>
+              <input type="file" id="file-input" accept="image/*,application/pdf" hidden>
+            </div>
+            <div id="file-preview" class="util-hidden file-preview">
+              <div class="fp-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></div>
+              <div style="flex:1;min-width:0"><div class="fp-name" id="fp-name">—</div><div class="fp-size" id="fp-size"></div></div>
+              <button class="btn btn-ghost btn-sm" id="fp-remove" type="button">✕</button>
+            </div>
+            <button class="btn btn-gold btn-block" id="upload-btn" style="margin-top:1rem" disabled><span class="btn-label">Submit receipt</span></button>
+          </div>
+        </div>
+
+        <!-- Pending / confirmed / rejected state -->
+        <div id="state-box" class="util-hidden card card-pad" style="margin-top:1.5rem;text-align:center"></div>
+      </div>
+    </div>
+  </main>
+
+  <div class="toast-wrap" id="toast-wrap"></div>
+  <script src="/js/common.js"></script>
+  <script src="/js/ticket.js"></script>
+</body>
+</html>
