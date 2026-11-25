@@ -1,16 +1,16 @@
 'use strict';
 
-const { db } = require('../db');
+const { prisma, IS_SQLITE } = require('../db');
 const config = require('../config');
 
 function byId(id) {
-  return db.prepare('SELECT * FROM participants WHERE id = ?').get(id);
+  return prisma.participant.findUnique({ where: { id: Number(id) } });
 }
 function byReference(ref) {
-  return db.prepare('SELECT * FROM participants WHERE reference = ?').get(String(ref || '').trim().toUpperCase());
+  return prisma.participant.findUnique({ where: { reference: String(ref || '').trim().toUpperCase() } });
 }
 function byToken(token) {
-  return db.prepare('SELECT * FROM participants WHERE verify_token = ?').get(token);
+  return prisma.participant.findUnique({ where: { verify_token: String(token || '') } });
 }
 
 const ALLOWED_SORT = {
@@ -21,123 +21,89 @@ const ALLOWED_SORT = {
   status: 'payment_status',
 };
 
-/**
- * Search + filter + paginate participants for the admin dashboard.
- */
-function search(opts = {}) {
-  const where = [];
-  const params = {};
+// case-insensitive contains (mode is Postgres-only; sqlite LIKE is already CI for ASCII)
+function ci(value) {
+  return IS_SQLITE ? { contains: value } : { contains: value, mode: 'insensitive' };
+}
+
+async function search(opts = {}) {
+  const AND = [];
 
   if (opts.q) {
-    where.push(`(
-      first_name LIKE @q OR last_name LIKE @q OR email LIKE @q
-      OR phone LIKE @q OR reference LIKE @q
-      OR (first_name || ' ' || last_name) LIKE @q
-    )`);
-    params.q = `%${String(opts.q).trim()}%`;
+    const q = String(opts.q).trim();
+    AND.push({
+      OR: [
+        { first_name: ci(q) },
+        { last_name: ci(q) },
+        { email: ci(q) },
+        { phone: { contains: q } },
+        { reference: ci(q) },
+      ],
+    });
   }
-  if (opts.gender && ['Male', 'Female'].includes(opts.gender)) {
-    where.push('gender = @gender');
-    params.gender = opts.gender;
-  }
-  if (opts.worker === 'yes' || opts.worker === 'no') {
-    where.push('is_worker = @worker');
-    params.worker = opts.worker === 'yes' ? 1 : 0;
-  }
-  if (opts.department) {
-    where.push('department = @department');
-    params.department = opts.department;
-  }
-  if (opts.group && config.event.groups.includes(opts.group)) {
-    where.push('group_name = @group');
-    params.group = opts.group;
-  }
-  if (opts.status) {
-    where.push('payment_status = @status');
-    params.status = opts.status;
-  }
-  if (opts.tier && ['early_bird', 'regular'].includes(opts.tier)) {
-    where.push('fee_tier = @tier');
-    params.tier = opts.tier;
-  }
-  if (opts.checkedIn === 'yes' || opts.checkedIn === 'no') {
-    where.push('checked_in = @checkedIn');
-    params.checkedIn = opts.checkedIn === 'yes' ? 1 : 0;
-  }
+  if (opts.gender && ['Male', 'Female'].includes(opts.gender)) AND.push({ gender: opts.gender });
+  if (opts.worker === 'yes' || opts.worker === 'no') AND.push({ is_worker: opts.worker === 'yes' });
+  if (opts.department) AND.push({ department: opts.department });
+  if (opts.group && config.event.groups.includes(opts.group)) AND.push({ group_name: opts.group });
+  if (opts.status) AND.push({ payment_status: opts.status });
+  if (opts.tier && ['early_bird', 'regular'].includes(opts.tier)) AND.push({ fee_tier: opts.tier });
+  if (opts.checkedIn === 'yes' || opts.checkedIn === 'no') AND.push({ checked_in: opts.checkedIn === 'yes' });
 
-  const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  const where = AND.length ? { AND } : {};
   const sortCol = ALLOWED_SORT[opts.sort] || 'created_at';
-  const dir = String(opts.dir).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  const dir = String(opts.dir).toLowerCase() === 'asc' ? 'asc' : 'desc';
 
   const page = Math.max(1, parseInt(opts.page, 10) || 1);
   const pageSize = Math.min(200, Math.max(1, parseInt(opts.pageSize, 10) || 25));
-  const offset = (page - 1) * pageSize;
 
-  const total = db.prepare(`SELECT COUNT(*) AS n FROM participants ${whereSql}`).get(params).n;
-  const rows = db
-    .prepare(
-      `SELECT * FROM participants ${whereSql} ORDER BY ${sortCol} ${dir}, id ${dir} LIMIT @_limit OFFSET @_offset`
-    )
-    .all({ ...params, _limit: pageSize, _offset: offset });
+  const [total, rows] = await Promise.all([
+    prisma.participant.count({ where }),
+    prisma.participant.findMany({
+      where,
+      orderBy: [{ [sortCol]: dir }, { id: dir }],
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+  ]);
 
   return { rows, total, page, pageSize, pages: Math.ceil(total / pageSize) || 1 };
 }
 
 function all() {
-  return db.prepare('SELECT * FROM participants ORDER BY created_at ASC, id ASC').all();
+  return prisma.participant.findMany({ orderBy: [{ created_at: 'asc' }, { id: 'asc' }] });
 }
 
 const EDITABLE = ['first_name', 'last_name', 'phone', 'gender', 'is_worker', 'department', 'group_name', 'admin_remark'];
 
-function update(id, fields) {
-  const sets = [];
-  const params = { id };
+async function update(id, fields) {
+  const data = {};
   for (const key of EDITABLE) {
     if (key in fields && fields[key] !== undefined) {
-      sets.push(`${key} = @${key}`);
-      params[key] = key === 'is_worker' ? (fields[key] ? 1 : 0) : fields[key];
+      data[key] = key === 'is_worker' ? !!fields[key] : fields[key];
     }
   }
-  if (!sets.length) return byId(id);
-  // keep department consistent with worker flag
-  if ('is_worker' in fields && !fields.is_worker) {
-    sets.push('department = NULL');
-  }
-  db.prepare(
-    `UPDATE participants SET ${sets.join(', ')}, updated_at = datetime('now') WHERE id = @id`
-  ).run(params);
-  return byId(id);
+  if ('is_worker' in fields && !fields.is_worker) data.department = null;
+  if (!Object.keys(data).length) return byId(id);
+  return prisma.participant.update({ where: { id: Number(id) }, data });
 }
 
-function checkIn(id, adminId) {
-  const p = byId(id);
+async function checkIn(id, adminId) {
+  const p = await byId(id);
   if (!p) return { ok: false, reason: 'not_found' };
-  if (p.payment_status !== 'confirmed') {
-    return { ok: false, reason: 'not_confirmed', participant: p };
-  }
-  if (p.checked_in) {
-    return { ok: false, reason: 'already', participant: p };
-  }
-  db.prepare(
-    `UPDATE participants SET checked_in = 1, checked_in_at = datetime('now'), checked_in_by = ?, updated_at = datetime('now') WHERE id = ?`
-  ).run(adminId, id);
-  return { ok: true, participant: byId(id) };
+  if (p.payment_status !== 'confirmed') return { ok: false, reason: 'not_confirmed', participant: p };
+  if (p.checked_in) return { ok: false, reason: 'already', participant: p };
+  const updated = await prisma.participant.update({
+    where: { id: p.id },
+    data: { checked_in: true, checked_in_at: new Date(), checked_in_by: adminId },
+  });
+  return { ok: true, participant: updated };
 }
 
 function undoCheckIn(id) {
-  db.prepare(
-    `UPDATE participants SET checked_in = 0, checked_in_at = NULL, checked_in_by = NULL, updated_at = datetime('now') WHERE id = ?`
-  ).run(id);
-  return byId(id);
+  return prisma.participant.update({
+    where: { id: Number(id) },
+    data: { checked_in: false, checked_in_at: null, checked_in_by: null },
+  });
 }
 
-module.exports = {
-  byId,
-  byReference,
-  byToken,
-  search,
-  all,
-  update,
-  checkIn,
-  undoCheckIn,
-};
+module.exports = { byId, byReference, byToken, search, all, update, checkIn, undoCheckIn };

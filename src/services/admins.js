@@ -1,16 +1,16 @@
 'use strict';
 
 const bcrypt = require('bcryptjs');
-const { db } = require('../db');
+const { prisma } = require('../db');
 const config = require('../config');
 
 const ROLES = ['superadmin', 'admin', 'verifier'];
 
 function byEmail(email) {
-  return db.prepare('SELECT * FROM admins WHERE email = ?').get(String(email || '').toLowerCase().trim());
+  return prisma.admin.findUnique({ where: { email: String(email || '').toLowerCase().trim() } });
 }
 function byId(id) {
-  return db.prepare('SELECT * FROM admins WHERE id = ?').get(id);
+  return prisma.admin.findUnique({ where: { id: Number(id) } });
 }
 
 function publicView(a) {
@@ -20,40 +20,46 @@ function publicView(a) {
 
 function create({ email, name, password, role = 'admin' }) {
   if (!ROLES.includes(role)) role = 'admin';
-  const hash = bcrypt.hashSync(password, 12);
-  const info = db
-    .prepare('INSERT INTO admins (email, name, password_hash, role) VALUES (?, ?, ?, ?)')
-    .run(String(email).toLowerCase().trim(), name, hash, role);
-  return byId(info.lastInsertRowid);
+  return prisma.admin.create({
+    data: {
+      email: String(email).toLowerCase().trim(),
+      name,
+      password_hash: bcrypt.hashSync(password, 12),
+      role,
+    },
+  });
 }
 
-function verify(email, password) {
-  const a = byEmail(email);
+async function verify(email, password) {
+  const a = await byEmail(email);
   if (!a || !a.active) return null;
   if (!bcrypt.compareSync(password, a.password_hash)) return null;
-  db.prepare("UPDATE admins SET last_login_at = datetime('now') WHERE id = ?").run(a.id);
+  await prisma.admin.update({ where: { id: a.id }, data: { last_login_at: new Date() } });
   return a;
 }
 
 function changePassword(id, newPassword) {
-  const hash = bcrypt.hashSync(newPassword, 12);
-  db.prepare("UPDATE admins SET password_hash = ?, updated_at = datetime('now') WHERE id = ?").run(hash, id);
+  return prisma.admin.update({
+    where: { id: Number(id) },
+    data: { password_hash: bcrypt.hashSync(newPassword, 12) },
+  });
 }
 
-function list() {
-  return db.prepare('SELECT * FROM admins ORDER BY id ASC').all().map(publicView);
+async function list() {
+  const rows = await prisma.admin.findMany({ orderBy: { id: 'asc' } });
+  return rows.map(publicView);
 }
 
-function setActive(id, active) {
-  db.prepare("UPDATE admins SET active = ?, updated_at = datetime('now') WHERE id = ?").run(active ? 1 : 0, id);
-  return publicView(byId(id));
+async function setActive(id, active) {
+  const a = await prisma.admin.update({ where: { id: Number(id) }, data: { active: !!active } });
+  return publicView(a);
 }
 
 /** Create the bootstrap admin from env on first run (idempotent). */
-function ensureBootstrapAdmin() {
-  const count = db.prepare('SELECT COUNT(*) AS n FROM admins').get().n;
+async function ensureBootstrapAdmin() {
+  const count = await prisma.admin.count();
   if (count > 0) return { created: false };
-  const a = create({
+  const a = await create({
     email: config.bootstrapAdmin.email,
     name: config.bootstrapAdmin.name,
     password: config.bootstrapAdmin.password,
@@ -62,15 +68,4 @@ function ensureBootstrapAdmin() {
   return { created: true, admin: publicView(a) };
 }
 
-module.exports = {
-  ROLES,
-  byEmail,
-  byId,
-  publicView,
-  create,
-  verify,
-  changePassword,
-  list,
-  setActive,
-  ensureBootstrapAdmin,
-};
+module.exports = { ROLES, byEmail, byId, publicView, create, verify, changePassword, list, setActive, ensureBootstrapAdmin };

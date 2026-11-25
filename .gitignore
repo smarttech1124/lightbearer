@@ -1,11 +1,17 @@
 node_modules/
 .env
-data/*.db
-data/*.db-shm
-data/*.db-wal
-data/backups/
+.env.*
+!.env.example
+
+# Prisma local/dev database (SQLite smoke tests)
+prisma/*.db
+prisma/*.db-journal
+dev.db
+
+# Uploaded receipts
 uploads/*
 !uploads/.gitkeep
+
 *.log
 npm-debug.log*
 .DS_Store

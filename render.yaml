@@ -1,0 +1,69 @@
+# Render Blueprint — Postgres (Prisma) + web service.
+# Render → New → Blueprint → connect this repo. Set the "sync: false" secrets in
+# the dashboard. Receipts are stored on the mounted disk; the database is Postgres.
+databases:
+  - name: lb-postgres
+    databaseName: lightbearers
+    user: lightbearers
+    plan: basic-256mb
+
+services:
+  - type: web
+    name: light-bearers-portal
+    runtime: node
+    plan: starter
+    region: frankfurt
+    branch: main
+    # install runs postinstall (prisma generate); db push syncs the schema
+    buildCommand: pnpm install --frozen-lockfile && pnpm prisma db push
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: lb-uploads
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "22.11.0"
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: lb-postgres
+          property: connectionString
+      - key: UPLOADS_DIR
+        value: /var/data/uploads
+      - key: JWT_SECRET
+        generateValue: true
+      # PUBLIC_BASE_URL auto-detects the Render URL; set only for a custom domain
+      - key: PUBLIC_BASE_URL
+        sync: false
+      # --- Set these in the Render dashboard ---
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ADMIN_NAME
+        value: Lead Administrator
+      - key: RESEND_API_KEY
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+      - key: ADMIN_NOTIFY_EMAIL
+        sync: false
+      - key: BANK_NAME
+        sync: false
+      - key: BANK_ACCOUNT_NAME
+        sync: false
+      - key: BANK_ACCOUNT_NUMBER
+        sync: false
+      # --- Event / pricing ---
+      - key: EVENT_NAME
+        value: Light Bearers Picnic Hangout
+      - key: EARLY_BIRD_LIMIT
+        value: "20"
+      - key: EARLY_BIRD_FEE
+        value: "1500"
+      - key: REGULAR_FEE
+        value: "2000"

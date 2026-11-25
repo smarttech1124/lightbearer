@@ -1,67 +1,61 @@
 'use strict';
 
-const { db } = require('../db');
+const { prisma } = require('../db');
 
-const insert = db.prepare(`
-  INSERT INTO notifications (participant_id, channel, kind, recipient, status, payload)
-  VALUES (?, ?, ?, ?, 'pending', ?)
-`);
-
-function create({ participantId = null, channel, kind, recipient = null, payload = null }) {
-  const info = insert.run(
-    participantId,
-    channel,
-    kind,
-    recipient,
-    payload ? JSON.stringify(payload) : null
-  );
-  return info.lastInsertRowid;
+async function create({ participantId = null, channel, kind, recipient = null, payload = null }) {
+  const n = await prisma.notification.create({
+    data: {
+      participant_id: participantId,
+      channel,
+      kind,
+      recipient,
+      status: 'pending',
+      payload: payload ? JSON.stringify(payload) : null,
+    },
+  });
+  return n.id;
 }
 
 function markSent(id) {
-  db.prepare(
-    `UPDATE notifications
-        SET status='sent', attempts = attempts + 1, last_error = NULL, updated_at = datetime('now')
-      WHERE id = ?`
-  ).run(id);
+  return prisma.notification.update({
+    where: { id: Number(id) },
+    data: { status: 'sent', attempts: { increment: 1 }, last_error: null },
+  });
 }
 
 function markFailed(id, error) {
-  db.prepare(
-    `UPDATE notifications
-        SET status='failed', attempts = attempts + 1, last_error = ?, updated_at = datetime('now')
-      WHERE id = ?`
-  ).run(String(error && error.message ? error.message : error).slice(0, 500), id);
+  const msg = String(error && error.message ? error.message : error).slice(0, 500);
+  return prisma.notification.update({
+    where: { id: Number(id) },
+    data: { status: 'failed', attempts: { increment: 1 }, last_error: msg },
+  });
 }
 
-function recent(limit = 100) {
-  return db
-    .prepare(
-      `SELECT n.*, p.reference, p.first_name, p.last_name
-         FROM notifications n
-         LEFT JOIN participants p ON p.id = n.participant_id
-        ORDER BY n.id DESC LIMIT ?`
-    )
-    .all(limit);
+async function recent(limit = 100) {
+  const rows = await prisma.notification.findMany({
+    orderBy: { id: 'desc' },
+    take: limit,
+    include: { participant: { select: { reference: true, first_name: true, last_name: true } } },
+  });
+  return rows.map((n) => ({
+    ...n,
+    reference: n.participant ? n.participant.reference : null,
+    first_name: n.participant ? n.participant.first_name : null,
+    last_name: n.participant ? n.participant.last_name : null,
+  }));
 }
 
 function failed(limit = 100) {
-  return db
-    .prepare(`SELECT * FROM notifications WHERE status='failed' ORDER BY id DESC LIMIT ?`)
-    .all(limit);
+  return prisma.notification.findMany({ where: { status: 'failed' }, orderBy: { id: 'desc' }, take: limit });
 }
 
-function stats() {
-  const row = db
-    .prepare(
-      `SELECT
-         SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) AS sent,
-         SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
-         SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed
-       FROM notifications`
-    )
-    .get();
-  return { sent: row.sent || 0, pending: row.pending || 0, failed: row.failed || 0 };
+async function stats() {
+  const [sent, pending, failedCount] = await Promise.all([
+    prisma.notification.count({ where: { status: 'sent' } }),
+    prisma.notification.count({ where: { status: 'pending' } }),
+    prisma.notification.count({ where: { status: 'failed' } }),
+  ]);
+  return { sent, pending, failed: failedCount };
 }
 
 module.exports = { create, markSent, markFailed, recent, failed, stats };

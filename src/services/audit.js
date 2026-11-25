@@ -1,26 +1,27 @@
 'use strict';
 
-const { db } = require('../db');
+const { prisma } = require('../db');
 
-const insert = db.prepare(`
-  INSERT INTO audit_logs (admin_id, admin_email, action, entity, entity_id, details, ip)
-  VALUES (?, ?, ?, ?, ?, ?, ?)
-`);
-
-function log({ admin, action, entity = null, entityId = null, details = null, ip = null }) {
-  insert.run(
-    admin ? admin.id : null,
-    admin ? admin.email : null,
-    action,
-    entity,
-    entityId != null ? String(entityId) : null,
-    details ? (typeof details === 'string' ? details : JSON.stringify(details)) : null,
-    ip
-  );
+async function log({ admin, action, entity = null, entityId = null, details = null, ip = null }) {
+  try {
+    await prisma.auditLog.create({
+      data: {
+        admin_id: admin ? admin.id : null,
+        admin_email: admin ? admin.email : null,
+        action,
+        entity,
+        entity_id: entityId != null ? String(entityId) : null,
+        details: details ? (typeof details === 'string' ? details : JSON.stringify(details)) : null,
+        ip,
+      },
+    });
+  } catch (e) {
+    console.error('[audit] failed to log:', e.message);
+  }
 }
 
 function recent(limit = 200) {
-  return db.prepare('SELECT * FROM audit_logs ORDER BY id DESC LIMIT ?').all(limit);
+  return prisma.auditLog.findMany({ orderBy: { id: 'desc' }, take: limit });
 }
 
 module.exports = { log, recent };

@@ -1,5 +1,6 @@
 'use strict';
 
+require('express-async-errors'); // route handler rejections flow to the error middleware
 const path = require('path');
 const express = require('express');
 const cookieParser = require('cookie-parser');

@@ -1,6 +1,5 @@
 'use strict';
 
-const nodemailer = require('nodemailer');
 const config = require('../config');
 const notifications = require('./notifications');
 const settings = require('./settings');
@@ -8,20 +7,8 @@ const barcode = require('./barcode');
 const { formatMoney, escapeHtml } = require('../utils/helpers');
 
 /* ------------------------------------------------------------------ *
- *  Transport: Resend (preferred) → SMTP → console (dev fallback)
+ *  Transport: Resend (preferred) → console (dev fallback)
  * ------------------------------------------------------------------ */
-let _smtp = null;
-function smtpTransport() {
-  if (_smtp) return _smtp;
-  _smtp = nodemailer.createTransport({
-    host: config.mail.host,
-    port: config.mail.port,
-    secure: config.mail.secure,
-    auth: config.mail.user ? { user: config.mail.user, pass: config.mail.pass } : undefined,
-  });
-  return _smtp;
-}
-
 async function deliverResend({ from, to, subject, html, attachments }) {
   const body = { from, to: [to], subject, html };
   if (attachments && attachments.length) {
@@ -45,19 +32,9 @@ async function deliverResend({ from, to, subject, html, attachments }) {
   return res.json().catch(() => ({}));
 }
 
-async function deliverSmtp({ from, to, subject, html, attachments }) {
-  const message = { from, to, subject, html };
-  if (attachments && attachments.length) {
-    message.attachments = attachments.map((a) => ({ filename: a.filename, content: a.buffer, contentType: a.contentType }));
-  }
-  return smtpTransport().sendMail(message);
-}
-
 async function deliver(msg) {
-  const provider = config.mail.provider;
-  if (provider === 'resend') return deliverResend(msg);
-  if (provider === 'smtp') return deliverSmtp(msg);
-  console.log(`[email:console] -> ${msg.to} :: ${msg.subject} (not sent; set RESEND_API_KEY or SMTP to deliver)`);
+  if (config.mail.provider === 'resend') return deliverResend(msg);
+  console.log(`[email:console] -> ${msg.to} :: ${msg.subject} (not sent; set RESEND_API_KEY to deliver)`);
   return { id: 'console' };
 }
 
@@ -95,7 +72,7 @@ function qrUrl(participant) {
  *  Sender (logs + retries every message)
  * ------------------------------------------------------------------ */
 async function send({ participant, to, subject, kind, html, attachQr = false }) {
-  const notifId = notifications.create({
+  const notifId = await notifications.create({
     participantId: participant ? participant.id : null,
     channel: 'email',
     kind,
@@ -116,7 +93,7 @@ async function send({ participant, to, subject, kind, html, attachQr = false }) 
   for (let i = 0; i < maxAttempts; i++) {
     try {
       const info = await deliver({ from: config.mail.from, to, subject, html, attachments });
-      notifications.markSent(notifId);
+      await notifications.markSent(notifId);
       console.log(`[email:${config.mail.provider}] sent -> ${to} :: ${subject} (${(info && (info.id || info.messageId)) || 'ok'})`);
       return { ok: true, notifId };
     } catch (err) {
@@ -124,7 +101,7 @@ async function send({ participant, to, subject, kind, html, attachQr = false }) 
       await new Promise((r) => setTimeout(r, 500 * (i + 1)));
     }
   }
-  notifications.markFailed(notifId, lastErr);
+  await notifications.markFailed(notifId, lastErr);
   console.error(`[email] FAILED -> ${to} :: ${subject} :: ${lastErr && lastErr.message}`);
   return { ok: false, notifId, error: lastErr };
 }
@@ -134,7 +111,7 @@ async function send({ participant, to, subject, kind, html, attachQr = false }) 
  * ------------------------------------------------------------------ */
 async function sendRegistrationEmail(participant) {
   const sym = config.event.currencySymbol;
-  const bank = settings.bank();
+  const bank = await settings.bank();
   const fee = formatMoney(participant.fee_amount, sym);
   const ticketUrl = `${config.publicBaseUrl}/ticket/${participant.verify_token}`;
   const tierLabel = participant.fee_tier === 'early_bird' ? 'Early Bird &#127881;' : 'Regular';
@@ -226,7 +203,7 @@ async function sendPaymentRejectedEmail(participant, reason) {
  *  Admin notification (replaces WhatsApp): a receipt was uploaded
  * ------------------------------------------------------------------ */
 async function sendReceiptAdminEmail(participant) {
-  const to = settings.notifyEmail();
+  const to = await settings.notifyEmail();
   const sym = config.event.currencySymbol;
   const dash = `${config.publicBaseUrl}/admin`;
   const body = `

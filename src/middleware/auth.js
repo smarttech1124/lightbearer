@@ -28,12 +28,12 @@ function clearAuthCookie(res) {
   res.clearCookie(COOKIE, { path: '/' });
 }
 
-function readAdmin(req) {
+async function readAdmin(req) {
   const token = req.cookies && req.cookies[COOKIE];
   if (!token) return null;
   try {
     const payload = jwt.verify(token, config.security.jwtSecret);
-    const admin = admins.byId(payload.sub);
+    const admin = await admins.byId(payload.sub);
     if (!admin || !admin.active) return null;
     return admin;
   } catch {
@@ -41,11 +41,15 @@ function readAdmin(req) {
   }
 }
 
-function requireAuth(req, res, next) {
-  const admin = readAdmin(req);
-  if (!admin) return res.status(401).json({ error: 'Authentication required.' });
-  req.admin = admin;
-  next();
+async function requireAuth(req, res, next) {
+  try {
+    const admin = await readAdmin(req);
+    if (!admin) return res.status(401).json({ error: 'Authentication required.' });
+    req.admin = admin;
+    next();
+  } catch (err) {
+    next(err);
+  }
 }
 
 function requireRole(...roles) {

@@ -9,17 +9,15 @@ const { register, RegistrationError } = require('../services/registration');
 const participantsSvc = require('../services/participants');
 const paymentsSvc = require('../services/payments');
 const statsSvc = require('../services/stats');
+const settingsSvc = require('../services/settings');
 const barcode = require('../services/barcode');
 const email = require('../services/email');
-const settingsSvc = require('../services/settings');
 const { getSetting } = require('../db');
 
 const router = express.Router();
 
 function fireAndForget(promiseFactory, label) {
-  Promise.resolve()
-    .then(promiseFactory)
-    .catch((err) => console.error(`[async:${label}] ${err && err.message}`));
+  Promise.resolve().then(promiseFactory).catch((err) => console.error(`[async:${label}] ${err && err.message}`));
 }
 
 function publicParticipant(p) {
@@ -42,8 +40,13 @@ function publicParticipant(p) {
   };
 }
 
-// --- Public configuration (safe to expose) ---
-router.get('/config', (req, res) => {
+// --- Public configuration ---
+router.get('/config', async (req, res) => {
+  const [bank, counters, open] = await Promise.all([
+    settingsSvc.bank(),
+    statsSvc.publicCounters(),
+    getSetting('registration_open', 'true'),
+  ]);
   res.json({
     event: {
       name: config.event.name,
@@ -54,16 +57,16 @@ router.get('/config', (req, res) => {
       earlyBirdLimit: config.event.earlyBirdLimit,
       groups: config.event.groups,
     },
-    bank: settingsSvc.bank(),
+    bank,
     departments: DEPARTMENTS,
     genders: GENDERS,
-    registrationOpen: getSetting('registration_open', 'true') === 'true',
-    counters: statsSvc.publicCounters(),
+    registrationOpen: open === 'true',
+    counters,
   });
 });
 
-router.get('/counters', (req, res) => {
-  res.json(statsSvc.publicCounters());
+router.get('/counters', async (req, res) => {
+  res.json(await statsSvc.publicCounters());
 });
 
 // --- Registration ---
@@ -73,7 +76,7 @@ router.post('/register', registerLimiter, async (req, res) => {
 
   let participant;
   try {
-    participant = register(v.data);
+    participant = await register(v.data);
   } catch (err) {
     if (err instanceof RegistrationError) {
       return res.status(err.status).json({ error: err.message, code: err.code });
@@ -82,59 +85,55 @@ router.post('/register', registerLimiter, async (req, res) => {
     return res.status(500).json({ error: 'Something went wrong creating your registration. Please try again.' });
   }
 
-  // Build QR for immediate display
   let qr = null;
-  try {
-    qr = await barcode.qrDataUrl(participant);
-  } catch (e) {
-    console.error('[register] qr', e.message);
-  }
+  try { qr = await barcode.qrDataUrl(participant); } catch (e) { console.error('[register] qr', e.message); }
 
-  // Send confirmation email in the background (don't block the response)
   fireAndForget(() => email.sendRegistrationEmail(participant), 'registration-email');
 
   res.status(201).json({
     participant: publicParticipant(participant),
     qr,
     ticketUrl: `${config.publicBaseUrl}/ticket/${participant.verify_token}`,
-    bank: settingsSvc.bank(),
+    bank: await settingsSvc.bank(),
     currencySymbol: config.event.currencySymbol,
   });
 });
 
-// --- Find my ticket (reference + email) ---
-router.post('/lookup', (req, res) => {
+// --- Find my ticket ---
+router.post('/lookup', async (req, res) => {
   const ref = String(req.body.reference || '').trim().toUpperCase();
   const mail = String(req.body.email || '').trim().toLowerCase();
   if (!ref || !mail) return res.status(400).json({ error: 'Enter both your reference and email.' });
-  const p = participantsSvc.byReference(ref);
+  const p = await participantsSvc.byReference(ref);
   if (!p || p.email.toLowerCase() !== mail) {
     return res.status(404).json({ error: 'No matching registration found. Check your reference and email.' });
   }
   res.json({ token: p.verify_token, ticketUrl: `${config.publicBaseUrl}/ticket/${p.verify_token}` });
 });
 
-// --- Ticket / status data by token ---
+// --- Ticket / status data ---
 router.get('/ticket/:token', async (req, res) => {
-  const p = participantsSvc.byToken(req.params.token);
+  const p = await participantsSvc.byToken(req.params.token);
   if (!p) return res.status(404).json({ error: 'Ticket not found.' });
-  const receipt = paymentsSvc.currentReceipt(p.id);
-  let qr = null;
-  try { qr = await barcode.qrDataUrl(p); } catch { /* ignore */ }
+  const [receipt, qr, bank] = await Promise.all([
+    paymentsSvc.currentReceipt(p.id),
+    barcode.qrDataUrl(p).catch(() => null),
+    settingsSvc.bank(),
+  ]);
   res.json({
     participant: publicParticipant(p),
     hasReceipt: !!receipt,
     receiptUploadedAt: receipt ? receipt.uploaded_at : null,
     qr,
-    bank: settingsSvc.bank(),
+    bank,
     currencySymbol: config.event.currencySymbol,
     event: { name: config.event.name },
   });
 });
 
-// --- QR image by token (opaque; safe public) ---
+// --- QR image by token ---
 router.get('/qr/:token.png', async (req, res) => {
-  const p = participantsSvc.byToken(req.params.token);
+  const p = await participantsSvc.byToken(req.params.token);
   if (!p) return res.status(404).send('Not found');
   try {
     const png = await barcode.qrPngBuffer(p);
@@ -148,14 +147,14 @@ router.get('/qr/:token.png', async (req, res) => {
 
 // --- Upload payment receipt ---
 router.post('/ticket/:token/receipt', uploadLimiter, receiptUpload, async (req, res) => {
-  const p = participantsSvc.byToken(req.params.token);
+  const p = await participantsSvc.byToken(req.params.token);
   if (!p) return res.status(404).json({ error: 'Ticket not found.' });
   if (!req.file) return res.status(400).json({ error: 'Please attach your payment receipt.' });
 
   let sha = null;
   try { sha = await sha256File(req.file.path); } catch { /* ignore */ }
 
-  paymentsSvc.attachReceipt(p.id, {
+  await paymentsSvc.attachReceipt(p.id, {
     stored_name: req.file.filename,
     original_name: req.file.originalname,
     mime: req.file.mimetype,
@@ -163,10 +162,7 @@ router.post('/ticket/:token/receipt', uploadLimiter, receiptUpload, async (req, 
     sha256: sha,
   });
 
-  const updated = participantsSvc.byId(p.id);
-
-  // Notify the admin by email that a receipt is ready to verify
-  // (background, logged + retried).
+  const updated = await participantsSvc.byId(p.id);
   fireAndForget(() => email.sendReceiptAdminEmail(updated), 'receipt-admin-email');
 
   res.json({

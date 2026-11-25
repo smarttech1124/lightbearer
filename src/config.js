@@ -15,19 +15,22 @@ function int(v, def) {
 
 const ROOT = path.resolve(__dirname, '..');
 
+// Uploaded receipts live on disk. On hosts with an ephemeral filesystem (e.g.
+// serverless) point UPLOADS_DIR at a mounted persistent volume, or swap to a
+// blob store. The database is PostgreSQL via Prisma (DATABASE_URL).
+const UPLOADS_DIR = process.env.UPLOADS_DIR ? path.resolve(process.env.UPLOADS_DIR) : path.join(ROOT, 'uploads');
+
 const config = {
   env: process.env.NODE_ENV || 'development',
   isProd: (process.env.NODE_ENV || 'development') === 'production',
   port: int(process.env.PORT, 4000),
-  publicBaseUrl: (process.env.PUBLIC_BASE_URL || 'http://localhost:4000').replace(/\/+$/, ''),
+  // Falls back to Render's auto-provided external URL, then localhost.
+  publicBaseUrl: (process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || 'http://localhost:4000').replace(/\/+$/, ''),
 
   paths: {
     root: ROOT,
     public: path.join(ROOT, 'public'),
-    uploads: path.join(ROOT, 'uploads'),
-    data: path.join(ROOT, 'data'),
-    db: path.join(ROOT, 'data', 'portal.db'),
-    backups: path.join(ROOT, 'data', 'backups'),
+    uploads: UPLOADS_DIR,
   },
 
   security: {
@@ -64,19 +67,11 @@ const config = {
   },
 
   mail: {
-    // Resend (preferred). Set RESEND_API_KEY to send real email.
+    // Resend. Set RESEND_API_KEY to send real email; otherwise console mode.
     resendKey: process.env.RESEND_API_KEY || '',
-    // SMTP (optional fallback if no Resend key).
-    host: process.env.SMTP_HOST || '',
-    port: int(process.env.SMTP_PORT, 587),
-    secure: bool(process.env.SMTP_SECURE, false),
-    user: process.env.SMTP_USER || '',
-    pass: process.env.SMTP_PASS || '',
     from: process.env.MAIL_FROM || 'Light Bearers Picnic <onboarding@resend.dev>',
     get provider() {
-      if (this.resendKey) return 'resend';
-      if (this.host) return 'smtp';
-      return 'console';
+      return this.resendKey ? 'resend' : 'console';
     },
     get enabled() {
       return this.provider !== 'console';

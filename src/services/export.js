@@ -23,6 +23,11 @@ const COLUMNS = [
   { key: 'created_at', header: 'Registered At', width: 20 },
 ];
 
+function fmtDate(d) {
+  if (!d) return '';
+  try { return new Date(d).toISOString().slice(0, 19).replace('T', ' '); } catch { return String(d); }
+}
+
 function flat(p) {
   return {
     ...p,
@@ -30,6 +35,7 @@ function flat(p) {
     checked_in: p.checked_in ? 'Yes' : 'No',
     department: p.department || '',
     amount_paid: p.amount_paid != null ? p.amount_paid : '',
+    created_at: fmtDate(p.created_at),
   };
 }
 

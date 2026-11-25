@@ -1,7 +1,7 @@
 'use strict';
 
 const config = require('../config');
-const { db, getSetting } = require('../db');
+const { prisma, Prisma, IS_SQLITE } = require('../db');
 const { pickGroup } = require('./groups');
 const { randomRefSegment, randomToken } = require('../utils/helpers');
 
@@ -18,93 +18,80 @@ function makeReference() {
   return `LB${yy}-${randomRefSegment(5)}`;
 }
 
-const findByEmail = db.prepare('SELECT id FROM participants WHERE email = ?');
-const countAll = db.prepare('SELECT COUNT(*) AS n FROM participants');
-const insertParticipant = db.prepare(`
-  INSERT INTO participants
-    (reference, verify_token, first_name, last_name, email, phone, gender,
-     is_worker, department, group_name, fee_tier, fee_amount, payment_status)
-  VALUES
-    (@reference, @verify_token, @first_name, @last_name, @email, @phone, @gender,
-     @is_worker, @department, @group_name, @fee_tier, @fee_amount, 'awaiting_payment')
-`);
+function isWriteConflict(err) {
+  // Prisma: P2034 = transaction write conflict / deadlock (serialization failure)
+  return err && err.code === 'P2034';
+}
+function isUniqueOn(err, field) {
+  return err && err.code === 'P2002' && Array.isArray(err.meta?.target) && err.meta.target.includes(field);
+}
 
 /**
- * Atomically register a participant.
- *  - decides early-bird vs regular fee based on registration order
- *  - allocates a balanced, random group
- *  - generates a unique reference + verification token
- * All within a single IMMEDIATE transaction so concurrent registrations cannot
- * over-allocate early-bird slots, duplicate references, or unbalance groups.
- *
- * @param {object} data  already-validated & normalised participant fields
- * @returns {object} the inserted participant row
+ * Atomically register a participant:
+ *  - early-bird vs regular fee by registration order
+ *  - balanced, random group
+ *  - unique reference + verification token
+ * Runs in a Serializable transaction (on Postgres) so concurrent registrations
+ * can't over-allocate early-bird slots or unbalance groups. Retries on write
+ * conflicts and on the (astronomically rare) reference/token collision.
  */
-const registerTx = db.transaction((data) => {
-  if (getSetting('registration_open', 'true') !== 'true') {
-    throw new RegistrationError('Registration is currently closed.', 'CLOSED', 403);
-  }
+async function register(data) {
+  const txOpts = IS_SQLITE ? {} : { isolationLevel: Prisma.TransactionIsolationLevel.Serializable };
 
-  if (findByEmail.get(data.email)) {
-    throw new RegistrationError(
-      'This email address is already registered. Each person can register once.',
-      'DUPLICATE_EMAIL',
-      409
-    );
-  }
-
-  const existing = countAll.get().n;
-  const isEarly = existing < config.event.earlyBirdLimit;
-  const fee_tier = isEarly ? 'early_bird' : 'regular';
-  const fee_amount = isEarly ? config.event.earlyBirdFee : config.event.regularFee;
-
-  const group_name = pickGroup();
-
-  // Insert with unique reference/token; retry on the (astronomically rare) collision.
-  let lastErr;
   for (let attempt = 0; attempt < 6; attempt++) {
     const reference = makeReference();
     const verify_token = randomToken(24);
     try {
-      const info = insertParticipant.run({
-        reference,
-        verify_token,
-        first_name: data.first_name,
-        last_name: data.last_name,
-        email: data.email,
-        phone: data.phone,
-        gender: data.gender,
-        is_worker: data.is_worker ? 1 : 0,
-        department: data.is_worker ? data.department : null,
-        group_name,
-        fee_tier,
-        fee_amount,
-      });
-      return db.prepare('SELECT * FROM participants WHERE id = ?').get(info.lastInsertRowid);
+      return await prisma.$transaction(async (tx) => {
+        const open = await tx.setting.findUnique({ where: { key: 'registration_open' } });
+        if (open && open.value === 'false') {
+          throw new RegistrationError('Registration is currently closed.', 'CLOSED', 403);
+        }
+
+        const dup = await tx.participant.findUnique({ where: { email: data.email } });
+        if (dup) {
+          throw new RegistrationError(
+            'This email address is already registered. Each person can register once.',
+            'DUPLICATE_EMAIL',
+            409
+          );
+        }
+
+        const existing = await tx.participant.count();
+        const isEarly = existing < config.event.earlyBirdLimit;
+
+        const group_name = await pickGroup(tx);
+
+        return tx.participant.create({
+          data: {
+            reference,
+            verify_token,
+            first_name: data.first_name,
+            last_name: data.last_name,
+            email: data.email,
+            phone: data.phone,
+            gender: data.gender,
+            is_worker: !!data.is_worker,
+            department: data.is_worker ? data.department : null,
+            group_name,
+            fee_tier: isEarly ? 'early_bird' : 'regular',
+            fee_amount: isEarly ? config.event.earlyBirdFee : config.event.regularFee,
+            payment_status: 'awaiting_payment',
+          },
+        });
+      }, txOpts);
     } catch (err) {
-      // Unique collision on reference/verify_token -> regenerate and retry.
-      if (String(err.message).includes('UNIQUE') &&
-          /reference|verify_token/.test(String(err.message))) {
-        lastErr = err;
-        continue;
+      if (err instanceof RegistrationError) throw err;
+      if (isUniqueOn(err, 'email')) {
+        throw new RegistrationError('This email address is already registered.', 'DUPLICATE_EMAIL', 409);
       }
-      // Email race (two simultaneous inserts of same email)
-      if (String(err.message).includes('UNIQUE') && /email/.test(String(err.message))) {
-        throw new RegistrationError(
-          'This email address is already registered.',
-          'DUPLICATE_EMAIL',
-          409
-        );
+      if (isWriteConflict(err) || isUniqueOn(err, 'reference') || isUniqueOn(err, 'verify_token')) {
+        continue; // retry with a fresh reference/token / re-read counts
       }
       throw err;
     }
   }
-  throw lastErr || new RegistrationError('Could not generate a unique reference, please retry.', 'REF_FAIL', 500);
-});
-
-function register(data) {
-  // Use IMMEDIATE so the write lock is taken up-front (multi-process safe).
-  return registerTx.immediate(data);
+  throw new RegistrationError('Could not complete registration, please try again.', 'RETRY_FAIL', 503);
 }
 
 module.exports = { register, RegistrationError, makeReference };

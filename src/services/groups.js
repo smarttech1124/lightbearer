@@ -2,64 +2,45 @@
 
 const crypto = require('crypto');
 const config = require('../config');
-const { db } = require('../db');
+const { prisma } = require('../db');
 
 /**
- * Choose the next group for a new participant.
- *
- * Strategy: pick the group(s) with the SMALLEST current membership (keeps all
- * groups balanced as registrations grow — capacity scales automatically), then
- * break ties RANDOMLY so allocation is not deterministic/predictable.
- *
- * Must be called INSIDE the same transaction as the participant insert so the
- * membership counts it reads cannot be changed by a concurrent registration.
+ * Pick the next group for a new participant: the least-full group, random
+ * tie-break. Call inside the registration transaction (pass `tx`) so the counts
+ * cannot shift under a concurrent registration.
  */
-function pickGroup() {
+async function pickGroup(client = prisma) {
   const groups = config.event.groups;
-
-  // Current counts per configured group (missing groups => 0)
-  const rows = db
-    .prepare('SELECT group_name, COUNT(*) AS n FROM participants GROUP BY group_name')
-    .all();
+  const rows = await client.participant.groupBy({ by: ['group_name'], _count: { _all: true } });
   const counts = new Map(groups.map((g) => [g, 0]));
-  for (const r of rows) {
-    if (counts.has(r.group_name)) counts.set(r.group_name, r.n);
-  }
+  for (const r of rows) if (counts.has(r.group_name)) counts.set(r.group_name, r._count._all);
 
   let min = Infinity;
   for (const g of groups) min = Math.min(min, counts.get(g));
-
   const candidates = groups.filter((g) => counts.get(g) === min);
-  // cryptographically-random tie break
-  const idx = crypto.randomInt(0, candidates.length);
-  return candidates[idx];
+  return candidates[crypto.randomInt(0, candidates.length)];
 }
 
-function groupStats() {
+async function groupStats() {
   const groups = config.event.groups;
-  const rows = db
-    .prepare(
-      `SELECT group_name,
-              COUNT(*) AS total,
-              SUM(CASE WHEN payment_status='confirmed' THEN 1 ELSE 0 END) AS confirmed,
-              SUM(CASE WHEN checked_in=1 THEN 1 ELSE 0 END) AS checked_in,
-              SUM(CASE WHEN gender='Male' THEN 1 ELSE 0 END) AS male,
-              SUM(CASE WHEN gender='Female' THEN 1 ELSE 0 END) AS female
-         FROM participants GROUP BY group_name`
-    )
-    .all();
-  const byName = new Map(rows.map((r) => [r.group_name, r]));
-  return groups.map((g) => {
-    const r = byName.get(g) || {};
-    return {
-      group: g,
-      total: r.total || 0,
-      confirmed: r.confirmed || 0,
-      checked_in: r.checked_in || 0,
-      male: r.male || 0,
-      female: r.female || 0,
-    };
-  });
+  const [rows, confirmed, checkedIn, male, female] = await Promise.all([
+    prisma.participant.groupBy({ by: ['group_name'], _count: { _all: true } }),
+    prisma.participant.groupBy({ by: ['group_name'], where: { payment_status: 'confirmed' }, _count: { _all: true } }),
+    prisma.participant.groupBy({ by: ['group_name'], where: { checked_in: true }, _count: { _all: true } }),
+    prisma.participant.groupBy({ by: ['group_name'], where: { gender: 'Male' }, _count: { _all: true } }),
+    prisma.participant.groupBy({ by: ['group_name'], where: { gender: 'Female' }, _count: { _all: true } }),
+  ]);
+  const map = (arr) => new Map(arr.map((r) => [r.group_name, r._count._all]));
+  const total = map(rows), conf = map(confirmed), chk = map(checkedIn), m = map(male), f = map(female);
+
+  return groups.map((g) => ({
+    group: g,
+    total: total.get(g) || 0,
+    confirmed: conf.get(g) || 0,
+    checked_in: chk.get(g) || 0,
+    male: m.get(g) || 0,
+    female: f.get(g) || 0,
+  }));
 }
 
 module.exports = { pickGroup, groupStats };

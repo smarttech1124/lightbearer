@@ -1,29 +1,26 @@
 'use strict';
 
 /**
- * Create or reset an admin account from the command line.
+ * Create or reset an admin account:
  *   node src/scripts/seedAdmin.js <email> <name> <password> [role]
- * If the admin exists, the password/name/role are updated.
  */
-const { migrate, db } = require('../db');
+const { prisma } = require('../db');
 const admins = require('../services/admins');
 
-migrate();
-
-const [, , email, name, password, role = 'admin'] = process.argv;
-
-if (!email || !name || !password) {
-  console.log('Usage: node src/scripts/seedAdmin.js <email> <name> <password> [superadmin|admin|verifier]');
-  process.exit(1);
-}
-
-const existing = admins.byEmail(email);
-if (existing) {
-  admins.changePassword(existing.id, password);
-  db.prepare('UPDATE admins SET name = ?, role = ?, active = 1 WHERE id = ?').run(name, role, existing.id);
-  console.log(`Updated admin: ${email} (role=${role})`);
-} else {
-  const a = admins.create({ email, name, password, role });
-  console.log(`Created admin: ${a.email} (role=${a.role})`);
-}
-process.exit(0);
+(async () => {
+  const [, , email, name, password, role = 'admin'] = process.argv;
+  if (!email || !name || !password) {
+    console.log('Usage: node src/scripts/seedAdmin.js <email> <name> <password> [superadmin|admin|verifier]');
+    process.exit(1);
+  }
+  const existing = await admins.byEmail(email);
+  if (existing) {
+    await admins.changePassword(existing.id, password);
+    await prisma.admin.update({ where: { id: existing.id }, data: { name, role, active: true } });
+    console.log(`Updated admin: ${email} (role=${role})`);
+  } else {
+    const a = await admins.create({ email, name, password, role });
+    console.log(`Created admin: ${a.email} (role=${a.role})`);
+  }
+  await prisma.$disconnect();
+})().catch((e) => { console.error(e); process.exit(1); });

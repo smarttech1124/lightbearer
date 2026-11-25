@@ -5,28 +5,34 @@
   "description": "Light Bearers Picnic Registration & Management Portal",
   "type": "commonjs",
   "main": "server.js",
+  "packageManager": "pnpm@12.23.0",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "seed:admin": "node src/scripts/seedAdmin.js",
-    "backup": "node src/scripts/backup.js"
+    "postinstall": "prisma generate",
+    "prisma:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "db:migrate": "prisma migrate deploy",
+    "db:studio": "prisma studio",
+    "seed:admin": "node src/scripts/seedAdmin.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": "22.x"
   },
   "dependencies": {
+    "@prisma/client": "^6.1.0",
     "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^11.8.1",
     "cookie-parser": "^1.4.7",
     "dotenv": "^16.4.7",
     "exceljs": "^4.4.0",
     "express": "^4.21.2",
+    "express-async-errors": "^3.1.1",
     "express-rate-limit": "^7.5.0",
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
-    "multer": "^1.4.5-lts.1",
-    "nodemailer": "^6.9.16",
+    "multer": "^2.0.1",
     "pdfkit": "^0.15.2",
+    "prisma": "^6.1.0",
     "qrcode": "^1.5.4"
   }
 }

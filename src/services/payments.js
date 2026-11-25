@@ -1,88 +1,63 @@
 'use strict';
 
-const { db } = require('../db');
-
-const markOldReceipts = db.prepare(
-  'UPDATE receipts SET is_current = 0 WHERE participant_id = ?'
-);
-const insertReceipt = db.prepare(`
-  INSERT INTO receipts (participant_id, stored_name, original_name, mime, size, sha256, is_current)
-  VALUES (@participant_id, @stored_name, @original_name, @mime, @size, @sha256, 1)
-`);
-const setPending = db.prepare(`
-  UPDATE participants
-     SET payment_status = 'pending_verification',
-         updated_at = datetime('now')
-   WHERE id = ?
-`);
+const { prisma } = require('../db');
 
 /**
- * Attach an uploaded receipt and move the participant into 'pending_verification'.
- * Atomic so the receipt row and the status flip are always consistent.
+ * Attach an uploaded receipt and move the participant into 'pending_verification'
+ * — atomic so the receipt row and status flip stay consistent.
  */
-const attachReceiptTx = db.transaction((participantId, fileMeta) => {
-  markOldReceipts.run(participantId);
-  const info = insertReceipt.run({
-    participant_id: participantId,
-    stored_name: fileMeta.stored_name,
-    original_name: fileMeta.original_name || null,
-    mime: fileMeta.mime || null,
-    size: fileMeta.size || null,
-    sha256: fileMeta.sha256 || null,
-  });
-  setPending.run(participantId);
-  return db.prepare('SELECT * FROM receipts WHERE id = ?').get(info.lastInsertRowid);
-});
-
-function attachReceipt(participantId, fileMeta) {
-  return attachReceiptTx.immediate(participantId, fileMeta);
+async function attachReceipt(participantId, fileMeta) {
+  const id = Number(participantId);
+  const [, receipt] = await prisma.$transaction([
+    prisma.receipt.updateMany({ where: { participant_id: id }, data: { is_current: false } }),
+    prisma.receipt.create({
+      data: {
+        participant_id: id,
+        stored_name: fileMeta.stored_name,
+        original_name: fileMeta.original_name || null,
+        mime: fileMeta.mime || null,
+        size: fileMeta.size || null,
+        sha256: fileMeta.sha256 || null,
+        is_current: true,
+      },
+    }),
+    prisma.participant.update({ where: { id }, data: { payment_status: 'pending_verification' } }),
+  ]);
+  return receipt;
 }
 
 function currentReceipt(participantId) {
-  return db
-    .prepare(
-      'SELECT * FROM receipts WHERE participant_id = ? AND is_current = 1 ORDER BY id DESC LIMIT 1'
-    )
-    .get(participantId);
+  return prisma.receipt.findFirst({
+    where: { participant_id: Number(participantId), is_current: true },
+    orderBy: { id: 'desc' },
+  });
 }
 
 function allReceipts(participantId) {
-  return db
-    .prepare('SELECT * FROM receipts WHERE participant_id = ? ORDER BY id DESC')
-    .all(participantId);
+  return prisma.receipt.findMany({ where: { participant_id: Number(participantId) }, orderBy: { id: 'desc' } });
 }
 
 function confirmPayment(participantId, adminId, amountPaid, remark) {
-  db.prepare(`
-    UPDATE participants
-       SET payment_status = 'confirmed',
-           amount_paid = ?,
-           verified_by = ?,
-           verified_at = datetime('now'),
-           admin_remark = COALESCE(?, admin_remark),
-           updated_at = datetime('now')
-     WHERE id = ?
-  `).run(amountPaid != null ? amountPaid : null, adminId, remark || null, participantId);
-  return db.prepare('SELECT * FROM participants WHERE id = ?').get(participantId);
+  const data = {
+    payment_status: 'confirmed',
+    amount_paid: amountPaid != null ? amountPaid : null,
+    verified_by: adminId,
+    verified_at: new Date(),
+  };
+  if (remark) data.admin_remark = remark;
+  return prisma.participant.update({ where: { id: Number(participantId) }, data });
 }
 
 function rejectPayment(participantId, adminId, reason) {
-  db.prepare(`
-    UPDATE participants
-       SET payment_status = 'rejected',
-           verified_by = ?,
-           verified_at = datetime('now'),
-           admin_remark = ?,
-           updated_at = datetime('now')
-     WHERE id = ?
-  `).run(adminId, reason || null, participantId);
-  return db.prepare('SELECT * FROM participants WHERE id = ?').get(participantId);
+  return prisma.participant.update({
+    where: { id: Number(participantId) },
+    data: {
+      payment_status: 'rejected',
+      verified_by: adminId,
+      verified_at: new Date(),
+      admin_remark: reason || null,
+    },
+  });
 }
 
-module.exports = {
-  attachReceipt,
-  currentReceipt,
-  allReceipts,
-  confirmPayment,
-  rejectPayment,
-};
+module.exports = { attachReceipt, currentReceipt, allReceipts, confirmPayment, rejectPayment };

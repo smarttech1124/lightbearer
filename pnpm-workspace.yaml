@@ -1,0 +1,5 @@
+# Allow Prisma's install scripts (engine download + client generate) to run.
+allowBuilds:
+  '@prisma/client': true
+  '@prisma/engines': true
+  prisma: true

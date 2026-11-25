@@ -1,0 +1,128 @@
+// Light Bearers Picnic Portal — Prisma schema
+// Datasource: PostgreSQL (serverless-friendly; no persistent disk needed).
+// Set DATABASE_URL, e.g. a Neon / Supabase / Vercel Postgres connection string.
+//
+// Field names are snake_case to match the application's existing data shape.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Admin {
+  id            Int       @id @default(autoincrement())
+  email         String    @unique
+  name          String
+  password_hash String
+  role          String    @default("admin") // superadmin | admin | verifier
+  active        Boolean   @default(true)
+  last_login_at DateTime?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  verified_participants   Participant[] @relation("verifiedBy")
+  checkedin_participants  Participant[] @relation("checkedInBy")
+  audit_logs              AuditLog[]
+
+  @@map("admins")
+}
+
+model Participant {
+  id             Int       @id @default(autoincrement())
+  reference      String    @unique
+  verify_token   String    @unique
+  first_name     String
+  last_name      String
+  email          String    @unique
+  phone          String
+  gender         String // Male | Female
+  is_worker      Boolean   @default(false)
+  department     String?
+  group_name     String
+  fee_tier       String // early_bird | regular
+  fee_amount     Int
+  amount_paid    Int?
+  payment_status String    @default("awaiting_payment")
+  admin_remark   String?
+  verified_by    Int?
+  verifier       Admin?    @relation("verifiedBy", fields: [verified_by], references: [id])
+  verified_at    DateTime?
+  checked_in     Boolean   @default(false)
+  checked_in_at  DateTime?
+  checked_in_by  Int?
+  checker        Admin?    @relation("checkedInBy", fields: [checked_in_by], references: [id])
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @updatedAt
+
+  receipts       Receipt[]
+  notifications  Notification[]
+
+  @@index([group_name])
+  @@index([payment_status])
+  @@index([fee_tier])
+  @@index([created_at])
+  @@map("participants")
+}
+
+model Receipt {
+  id             Int         @id @default(autoincrement())
+  participant_id Int
+  participant    Participant @relation(fields: [participant_id], references: [id], onDelete: Cascade)
+  stored_name    String
+  original_name  String?
+  mime           String?
+  size           Int?
+  sha256         String?
+  is_current     Boolean     @default(true)
+  uploaded_at    DateTime    @default(now())
+
+  @@index([participant_id])
+  @@map("receipts")
+}
+
+model Notification {
+  id             Int          @id @default(autoincrement())
+  participant_id Int?
+  participant    Participant? @relation(fields: [participant_id], references: [id], onDelete: SetNull)
+  channel        String // email
+  kind           String // registration | receipt_admin | payment_confirmed | payment_rejected
+  recipient      String?
+  status         String       @default("pending") // pending | sent | failed
+  attempts       Int          @default(0)
+  last_error     String?
+  payload        String?
+  created_at     DateTime     @default(now())
+  updated_at     DateTime     @updatedAt
+
+  @@index([status])
+  @@index([participant_id])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id          Int      @id @default(autoincrement())
+  admin_id    Int?
+  admin       Admin?   @relation(fields: [admin_id], references: [id], onDelete: SetNull)
+  admin_email String?
+  action      String
+  entity      String?
+  entity_id   String?
+  details     String?
+  ip          String?
+  created_at  DateTime @default(now())
+
+  @@index([created_at])
+  @@map("audit_logs")
+}
+
+model Setting {
+  key        String   @id
+  value      String?
+  updated_at DateTime @updatedAt
+
+  @@map("settings")
+}
